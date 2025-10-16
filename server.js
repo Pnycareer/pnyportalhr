@@ -8,7 +8,14 @@ const path = require("path");
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
-app.use(cors({ origin: process.env.CLIENT_ORIGIN, credentials: true }));
+app.use(cors({
+  origin: ['https://pnyportalahr.vercel.app'], // no *
+  credentials: true,
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization','X-Requested-With']
+}));
+
+app.options('*', cors()); // answer preflight
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 app.get("/health", (req, res) => res.json({ ok: true }));
