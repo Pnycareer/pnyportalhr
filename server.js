@@ -10,11 +10,7 @@ app.use(express.json());
 app.use(cookieParser());
 
 const allowedOrigins = [
-  "https://pnycareer.com",
-  "https://www.pnycareer.com",
-  "https://ytnew-one.vercel.app",
   "http://localhost:5173",
-  "http://localhost:3000",
 ];
 
 const corsOptions = {
