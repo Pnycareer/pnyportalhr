@@ -11,6 +11,7 @@ app.use(cookieParser());
 
 const allowedOrigins = [
   "http://localhost:5173",
+  "https://pnyportalhr.vercel.app",
 ];
 
 const corsOptions = {
@@ -26,8 +27,6 @@ const corsOptions = {
 
 // Apply CORS middleware early
 app.use(cors(corsOptions));
-
-
 
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
