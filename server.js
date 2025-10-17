@@ -9,24 +9,19 @@ const app = express();
 app.use(express.json());
 app.use(cookieParser());
 
-const allowedOrigins = [
-  "http://localhost:5173",
-  "https://pnyportalhr.vercel.app",
-];
-
 const corsOptions = {
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
+  origin: ["http://localhost:5173", "https://pnyportalhr.vercel.app"],
   credentials: true,
+  methods: "GET,POST,PUT,DELETE,OPTIONS",
+  allowedHeaders: "Content-Type,Authorization",
 };
 
-// Apply CORS middleware early
 app.use(cors(corsOptions));
+app.get("/test", (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.send("Server is alive");
+});
+app.options("*", cors(corsOptions)); // 👈 super important for preflight
 
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
