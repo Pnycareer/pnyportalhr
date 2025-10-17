@@ -28,8 +28,6 @@ const corsOptions = {
 }
 
 app.use(cors(corsOptions))
-// IMPORTANT: use (.*) instead of *
-app.options('(.*)', cors(corsOptions))   // <— fixes the PathError
 
 // health + test
 app.get('/health', (req, res) => res.json({ ok: true }))
