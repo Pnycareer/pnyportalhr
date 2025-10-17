@@ -4,6 +4,7 @@ const User = require("../models/User");
 const { requiredFields } = require("../utils/validate");
 const { sendOtpEmail } = require("../utils/email");
 const { generateOtp, hashOtp, expiryFromNow } = require("../utils/otp");
+const generateToken = require("../utils/generatetoken");
 
 async function register(req, res) {
   try {
@@ -142,45 +143,35 @@ async function resendEmailOtp(req, res) {
 }
 
 async function login(req, res) {
-  const { email, password } = req.body;
+  const { email, password } = req.body
   try {
-    requiredFields(req.body, ["email", "password"]);
-    const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: "Invalid credentials" });
+    requiredFields(req.body, ['email', 'password'])
 
-    const ok = await user.validatePassword(password);
-    if (!ok) return res.status(400).json({ message: "Invalid credentials" });
+    const user = await User.findOne({ email })
+    if (!user) return res.status(400).json({ message: 'Invalid credentials' })
+
+    const ok = await user.validatePassword(password)
+    if (!ok) return res.status(400).json({ message: 'Invalid credentials' })
 
     if (!user.emailVerified)
-      return res
-        .status(403)
-        .json({ message: "Please verify your email via OTP first" });
-    if (!user.isApproved)
-      return res.status(403).json({ message: "Account awaiting approval" });
+      return res.status(403).json({ message: 'Please verify your email via OTP first' })
 
-    const token = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-    res
-      .cookie("token", token, {
-        httpOnly: true,
-        secure: true, // browser sees HTTPS (Cloudflare) → set true
-        sameSite: "lax", // same-origin app; use 'none' only if cross-site
-        domain: "hr.pnytrainings.com", // lock to your subdomain
-        path: "/",
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      })
-      .json({
-        id: user._id,
-        role: user.role,
-        fullName: user.fullName,
-        employeeId: user.employeeId,
-        department: user.department,
-      });
+    if (!user.isApproved)
+      return res.status(403).json({ message: 'Account awaiting approval' })
+
+    // >>> generate + set cookie
+    generateToken({ id: user._id, role: user.role }, res)
+
+    // send public profile
+    res.json({
+      id: user._id,
+      role: user.role,
+      fullName: user.fullName,
+      employeeId: user.employeeId,
+      department: user.department,
+    })
   } catch (e) {
-    res.status(e.status || 500).json({ message: e.message });
+    res.status(e.status || 500).json({ message: e.message })
   }
 }
 
