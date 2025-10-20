@@ -5,6 +5,7 @@ const { requiredFields } = require("../utils/validate");
 const { sendOtpEmail } = require("../utils/email");
 const { generateOtp, hashOtp, expiryFromNow } = require("../utils/otp");
 const generateToken = require("../utils/generatetoken");
+const { toPublicUrl } = require("../utils/url");
 
 async function register(req, res) {
   try {
@@ -55,8 +56,8 @@ async function register(req, res) {
 
     // handle avatar from multer (optional)
     if (req.file) {
-      // store a web-accessible path
-      user.profileImageUrl = `/uploads/avatars/${req.file.filename}`;
+      const relativePath = `/uploads/avatars/${req.file.filename}`;
+      user.profileImageUrl = toPublicUrl(relativePath);
     }
 
     // email OTP
@@ -71,7 +72,7 @@ async function register(req, res) {
       message:
         "Registered. Check your email for the verification code (expires in 10 minutes).",
       userId: user._id,
-      profileImageUrl: user.profileImageUrl || null,
+      profileImageUrl: toPublicUrl(user.profileImageUrl),
     });
   } catch (e) {
     return res.status(e.status || 500).json({ message: e.message });
@@ -160,7 +161,7 @@ async function login(req, res) {
       return res.status(403).json({ message: 'Account awaiting approval' })
 
     // >>> generate + set cookie
-    generateToken({ id: user._id, role: user.role }, res)
+    generateToken({ id: user._id, role: user.role, isTeamLead: user.isTeamLead }, res)
 
     // send public profile
     res.json({
@@ -169,6 +170,9 @@ async function login(req, res) {
       fullName: user.fullName,
       employeeId: user.employeeId,
       department: user.department,
+      isTeamLead: user.isTeamLead,
+      profileImageUrl: toPublicUrl(user.profileImageUrl),
+      signatureImageUrl: user.signatureImageUrl || null,
     })
   } catch (e) {
     res.status(e.status || 500).json({ message: e.message })
@@ -177,12 +181,12 @@ async function login(req, res) {
 
 async function getMe(req, res) {
   try {
-    const user = await User.findById(req.user.id).select(
-      "_id fullName profileImageUrl email employeeId department role isApproved emailVerified createdAt updatedAt"
-    );
+    const user = await User.findById(req.user.id)
 
     if (!user) return res.status(404).json({ message: "User not found" });
-    res.json(user);
+    const data = user.toObject();
+    data.profileImageUrl = toPublicUrl(data.profileImageUrl);
+    res.json(data);
   } catch (e) {
     res.status(e.status || 500).json({ message: e.message });
   }

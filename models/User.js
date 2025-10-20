@@ -24,9 +24,12 @@ const UserSchema = new mongoose.Schema(
 
     // profile image (stored path/URL)
     profileImageUrl: { type: String, default: null },
+    signatureImageUrl: { type: String, default: null },
+    signatureUpdatedAt: { type: Date, default: null },
 
     role: { type: String, enum: roles, default: "employee" },
     isApproved: { type: Boolean, default: false }, // only superadmin flips this
+    isTeamLead: { type: Boolean, default: false },
 
     // otp
     emailVerified: { type: Boolean, default: false },

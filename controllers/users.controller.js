@@ -1,5 +1,6 @@
 // controllers/users.controller.js
 const User = require('../models/User');
+const { toPublicUrl } = require('../utils/url');
 
 async function updateUser(req, res) {
   const { id } = req.params;
@@ -14,6 +15,7 @@ async function updateUser(req, res) {
     'joiningDate',
     'isApproved', // approve / reject
     'role',       // role change (extra-guarded below)
+    'isTeamLead',
   ];
 
   const patch = {};
@@ -44,19 +46,33 @@ async function updateUser(req, res) {
       department: user.department,
       role: user.role,
       isApproved: user.isApproved,
+      isTeamLead: user.isTeamLead,
       branch: user.branch,
       city: user.city,
       joiningDate: user.joiningDate,
+      profileImageUrl: toPublicUrl(user.profileImageUrl),
+      signatureImageUrl: user.signatureImageUrl || null,
     },
   });
 }
 
 async function listUsers(req, res) {
-  const { q } = req.query;
-  const filter = q ? { fullName: { $regex: q, $options: 'i' } } : {};
+  const { q, role } = req.query;
+  const filter = {};
+  if (q) {
+    filter.fullName = { $regex: q, $options: 'i' };
+  }
+  if (role) {
+    filter.role = role;
+  }
   const users = await User.find(filter)
-    .select('fullName email role employeeId department branch city joiningDate isApproved');
-  res.json(users);
+    .select('fullName email role employeeId department branch city joiningDate isApproved isTeamLead signatureImageUrl profileImageUrl')
+    .lean();
+  const hydrated = users.map((user) => ({
+    ...user,
+    profileImageUrl: toPublicUrl(user.profileImageUrl),
+  }));
+  res.json(hydrated);
 }
 
 async function deleteUser(req, res) {
@@ -81,4 +97,50 @@ async function deleteUser(req, res) {
   }
 }
 
-module.exports = { updateUser, listUsers, deleteUser };
+async function listTeamLeads(req, res) {
+  try {
+    const leads = await User.find({ isTeamLead: true, isApproved: true })
+      .sort({ fullName: 1 })
+      .select('fullName email employeeId department branch city signatureImageUrl profileImageUrl')
+      .lean();
+    const hydrated = leads.map((lead) => ({
+      ...lead,
+      profileImageUrl: toPublicUrl(lead.profileImageUrl),
+    }));
+    return res.json(hydrated);
+  } catch (err) {
+    return res.status(500).json({ message: err.message || 'Failed to load team leads' });
+  }
+}
+
+async function updateSelfTeamLeadStatus(req, res) {
+  try {
+    const { isTeamLead } = req.body || {};
+    if (typeof isTeamLead !== 'boolean') {
+      return res.status(400).json({ message: 'isTeamLead boolean is required' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    user.isTeamLead = isTeamLead;
+    await user.save();
+
+    return res.json({
+      message: isTeamLead ? 'Registered as team lead' : 'Team lead access removed',
+      isTeamLead: user.isTeamLead,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message || 'Failed to update team lead status' });
+  }
+}
+
+module.exports = {
+  updateUser,
+  listUsers,
+  deleteUser,
+  listTeamLeads,
+  updateSelfTeamLeadStatus,
+};
