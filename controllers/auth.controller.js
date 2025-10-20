@@ -7,6 +7,18 @@ const { generateOtp, hashOtp, expiryFromNow } = require("../utils/otp");
 const generateToken = require("../utils/generatetoken");
 const { toPublicUrl } = require("../utils/url");
 
+function normalizeOfficialOffDays(input) {
+  if (!input) return [];
+  const raw = Array.isArray(input)
+    ? input
+    : String(input).split(/[,;\n]/);
+
+  return raw
+    .map((day) => String(day || "").trim())
+    .filter(Boolean)
+    .map((day) => day.charAt(0).toUpperCase() + day.slice(1).toLowerCase());
+}
+
 async function register(req, res) {
   try {
     const {
@@ -18,6 +30,11 @@ async function register(req, res) {
       joiningDate,
       branch,
       city,
+      designation,
+      dutyRoster,
+      officialOffDays,
+      bloodGroup,
+      contactNumber,
       password,
     } = req.body;
 
@@ -30,6 +47,9 @@ async function register(req, res) {
       "joiningDate",
       "branch",
       "city",
+      "designation",
+      "dutyRoster",
+      "contactNumber",
       "password",
     ]);
 
@@ -47,6 +67,11 @@ async function register(req, res) {
       joiningDate,
       branch,
       city,
+      designation,
+      dutyRoster: dutyRoster ? String(dutyRoster).trim() : undefined,
+      officialOffDays: normalizeOfficialOffDays(officialOffDays),
+      bloodGroup: bloodGroup ? String(bloodGroup).trim().toUpperCase() : undefined,
+      contactNumber: contactNumber ? String(contactNumber).trim() : undefined,
       role: "employee",
       isApproved: false,
       emailVerified: false,

@@ -16,14 +16,16 @@ function isoToHHMM(iso) {
   if (!iso) return "";
   const d = new Date(iso);
   if (isNaN(d)) return "";
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
   return `${hh}:${mm}`;
 }
 
+function isValidObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
+}
 
-
-const ALLOWED = ['present','absent','leave','late','official_off','short_leave'];
+const ALLOWED = ['present','absent','leave','late','official_off','short_leave' , "public_holiday"];
 const LEGACY_MAP = { 'official off': 'official_off', 'Short leave': 'short_leave' };
 
 function normalizeStatus(s) {
@@ -36,27 +38,23 @@ function normalizeStatus(s) {
 function startOfDayUtc(d) {
   const x = new Date(d);
   if (isNaN(x)) return null;
-  x.setUTCHours(0,0,0,0);
+  x.setUTCHours(0, 0, 0, 0);
   return x;
 }
 
-function parseTimeOnDateUtc(baseUtcMidnight, val) {
-  if (!val) return null;
-  if (/^\d{2}:\d{2}$/.test(val)) {
-    const [hh, mm] = val.split(':').map(Number);
-    const dt = new Date(baseUtcMidnight);
-    dt.setUTCHours(hh, mm, 0, 0);
-    return dt;
-  }
-  const iso = new Date(val);
-  return isNaN(iso) ? null : iso;
+function endOfDayUtc(d) {
+  const x = new Date(d);
+  if (isNaN(x)) return null;
+  x.setUTCHours(24, 0, 0, 0);
+  return x;
 }
 
-function validateTimes(baseUtcMidnight, checkIn, checkOut) {
-  if (!checkIn && !checkOut) return null;
-  const dayStart = new Date(baseUtcMidnight);
-  const dayEnd = new Date(baseUtcMidnight);
-  dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+function validateSameDayUTC(anchorDate, checkIn, checkOut) {
+  if (!anchorDate) return 'date is required';
+  const date = new Date(anchorDate);
+  if (isNaN(date)) return 'Invalid date';
+  const dayStart = startOfDayUtc(date);
+  const dayEnd = endOfDayUtc(date);
   if (checkIn && (checkIn < dayStart || checkIn >= dayEnd)) return 'checkIn must be on the same calendar day as `date` (UTC)';
   if (checkOut && (checkOut < dayStart || checkOut >= dayEnd)) return 'checkOut must be on the same calendar day as `date` (UTC)';
   if (checkIn && checkOut && checkOut < checkIn) return 'checkOut cannot be earlier than checkIn';
@@ -72,148 +70,186 @@ function diffHours(a, b) {
 }
 
 function buildSetPayload({ status, note, checkIn, checkOut, markedBy, isOff }) {
-  const set = { status, note: note || '', markedBy };
+  const set = { status, note: note || null, markedBy };
   if (isOff) {
     set.checkIn = null;
     set.checkOut = null;
     set.workedHours = null;
   } else {
-    if (checkIn !== undefined) set.checkIn = checkIn;
-    if (checkOut !== undefined) set.checkOut = checkOut;
-    const wh = diffHours(checkIn ?? null, checkOut ?? null);
-    set.workedHours = wh;
+    set.checkIn = checkIn || null;
+    set.checkOut = checkOut || null;
+    set.workedHours = (checkIn && checkOut) ? diffHours(checkIn, checkOut) : null;
   }
   return set;
 }
 
-// --- mark ---
+/**
+ * POST /api/attendance/mark
+ * body: { userId, date (YYYY-MM-DD), status, note, checkIn('HH:MM'), checkOut('HH:MM') }
+ */
 async function mark(req, res) {
   try {
-    let { userId, date, status, note, checkIn, checkOut } = req.body;
+    const { userId, date, status: rawStatus, note, checkIn: hhmmIn, checkOut: hhmmOut } = req.body || {};
+    if (!userId || !isValidObjectId(userId)) return res.status(400).json({ message: 'Valid userId required' });
 
-    status = normalizeStatus(status);
-    if (!ALLOWED.includes(status)) return res.status(400).json({ message: 'Invalid status' });
+    const status = normalizeStatus(rawStatus);
+    if (!ALLOWED.includes(status)) return res.status(400).json({ message: `Invalid status. Allowed: ${ALLOWED.join(', ')}` });
 
-    const targetUser = await User.findById(userId);
-    if (!targetUser || !targetUser.isApproved) {
-      return res.status(400).json({ message: 'User not approvable/exists' });
-    }
+    const day = startOfDayUtc(date);
+    if (!day) return res.status(400).json({ message: 'Invalid date' });
 
-    const base = startOfDayUtc(date);
-    if (!base) return res.status(400).json({ message: 'Invalid date' });
-
-    const isOff = OFF.has(status);
-    const ci = isOff ? null : parseTimeOnDateUtc(base, checkIn);
-    const co = isOff ? null : parseTimeOnDateUtc(base, checkOut);
-
-    const timeErr = validateTimes(base, ci, co);
-    if (timeErr) return res.status(400).json({ message: timeErr });
-
-    const set = buildSetPayload({ status, note, checkIn: ci, checkOut: co, markedBy: req.user.id, isOff });
-
-    const upsert = await Attendance.findOneAndUpdate(
-      { user: userId, date: base },
-      { $set: set },
-      { new: true, upsert: true }
-    );
-    res.json(upsert);
-  } catch (err) {
-    console.error('mark error:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-}
-
-// --- bulk ---
-async function bulk(req, res) {
-  try {
-    const { date, records } = req.body;
-    if (!Array.isArray(records) || records.length === 0) {
-      return res.status(400).json({ message: 'No records' });
-    }
-
-    const base = startOfDayUtc(date);
-    if (!base) return res.status(400).json({ message: 'Invalid date' });
-
-    for (const r of records) {
-      const st = normalizeStatus(r.status);
-      if (!ALLOWED.includes(st)) return res.status(400).json({ message: `Invalid status for user ${r.userId}` });
-      const isOff = OFF.has(st);
-      const ci = isOff ? null : parseTimeOnDateUtc(base, r.checkIn);
-      const co = isOff ? null : parseTimeOnDateUtc(base, r.checkOut);
-      const timeErr = validateTimes(base, ci, co);
-      if (timeErr) return res.status(400).json({ message: `User ${r.userId}: ${timeErr}` });
-    }
-
-    const ops = records.map(r => {
-      const st = normalizeStatus(r.status);
-      const isOff = OFF.has(st);
-      const ci = isOff ? null : parseTimeOnDateUtc(base, r.checkIn);
-      const co = isOff ? null : parseTimeOnDateUtc(base, r.checkOut);
-      const set = buildSetPayload({ status: st, note: r.note || '', checkIn: ci, checkOut: co, markedBy: req.user.id, isOff });
-
-      return {
-        updateOne: {
-          filter: { user: r.userId, date: base },
-          update: { $set: set },
-          upsert: true,
+    // build checkIn/checkOut
+    let checkIn = null, checkOut = null;
+    if (!OFF.has(status)) {
+      if (hhmmIn) {
+        const [h1, m1] = String(hhmmIn).split(':').map(Number);
+        if (Number.isInteger(h1) && Number.isInteger(m1)) {
+          checkIn = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), h1, m1, 0, 0));
         }
-      };
+      }
+      if (hhmmOut) {
+        const [h2, m2] = String(hhmmOut).split(':').map(Number);
+        if (Number.isInteger(h2) && Number.isInteger(m2)) {
+          checkOut = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), h2, m2, 0, 0));
+        }
+      }
+    }
+
+    const sameDayErr = validateSameDayUTC(day, checkIn, checkOut);
+    if (sameDayErr) return res.status(400).json({ message: sameDayErr });
+
+    const set = buildSetPayload({
+      status,
+      note,
+      checkIn,
+      checkOut,
+      markedBy: req.user && req.user.id ? req.user.id : null,
+      isOff: OFF.has(status)
     });
 
-    const result = await Attendance.bulkWrite(ops);
-    res.json({ ok: true, result });
-  } catch (err) {
-    console.error('bulk error:', err);
+    const doc = await Attendance.findOneAndUpdate(
+      { user: userId, date: day },
+      { $set: set, $setOnInsert: { user: userId, date: day } },
+      { upsert: true, new: true }
+    );
+
+    res.json({ message: 'Marked', doc });
+  } catch (e) {
+    console.error('mark error:', e);
     res.status(500).json({ message: 'Server error' });
   }
 }
 
-// --- byDate: include workedHours ---
+/**
+ * POST /api/attendance/bulk
+ * body: { items: [{ userId, date, status, note, checkIn, checkOut }...] }
+ */
+async function bulk(req, res) {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (items.length === 0) return res.status(400).json({ message: 'No items' });
+
+    const ops = [];
+    for (const item of items) {
+      const { userId, date, status: rawStatus, note, checkIn: inStr, checkOut: outStr } = item || {};
+      if (!userId || !isValidObjectId(userId)) continue;
+
+      const status = normalizeStatus(rawStatus);
+      if (!ALLOWED.includes(status)) continue;
+
+      const day = startOfDayUtc(date);
+      if (!day) continue;
+
+      let checkIn = null, checkOut = null;
+      if (!OFF.has(status)) {
+        if (inStr) {
+          const [h1, m1] = String(inStr).split(':').map(Number);
+          if (Number.isInteger(h1) && Number.isInteger(m1)) {
+            checkIn = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), h1, m1, 0, 0));
+          }
+        }
+        if (outStr) {
+          const [h2, m2] = String(outStr).split(':').map(Number);
+          if (Number.isInteger(h2) && Number.isInteger(m2)) {
+            checkOut = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), h2, m2, 0, 0));
+          }
+        }
+      }
+
+      const sameDayErr = validateSameDayUTC(day, checkIn, checkOut);
+      if (sameDayErr) continue;
+
+      const set = buildSetPayload({
+        status,
+        note,
+        checkIn,
+        checkOut,
+        markedBy: req.user && req.user.id ? req.user.id : null,
+        isOff: OFF.has(status)
+      });
+
+      ops.push({
+        updateOne: {
+          filter: { user: userId, date: day },
+          update: { $set: set, $setOnInsert: { user: userId, date: day } },
+          upsert: true
+        }
+      });
+    }
+
+    if (!ops.length) return res.status(400).json({ message: 'No valid items to process' });
+
+    const result = await Attendance.bulkWrite(ops, { ordered: false });
+    res.json({ message: 'Bulk mark complete', result });
+  } catch (e) {
+    console.error('bulk error:', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+}
+
+/**
+ * GET /api/attendance/by-month?userId=&year=&month=
+ */
+async function byMonth(req, res) {
+  try {
+    const { userId, year, month } = req.query;
+    if (!userId || !isValidObjectId(userId)) return res.status(400).json({ message: 'Valid userId required' });
+    const rng = monthRangeUTC(year, month);
+    if (!rng) return res.status(400).json({ message: 'Invalid year/month' });
+
+    const rows = await Attendance.find({
+      user: userId,
+      date: { $gte: rng.start, $lt: rng.end }
+    }).sort({ date: 1 }).lean();
+
+    res.json({ year: parseInt(year, 10), month: parseInt(month, 10), userId, rows });
+  } catch (e) {
+    console.error('byMonth error:', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+}
+
+/**
+ * GET /api/attendance/by-date?userId=&date=YYYY-MM-DD
+ */
 async function byDate(req, res) {
   try {
-    const q = req.query?.date;
-    if (!q) return res.status(400).json({ message: 'Missing date' });
+    const { userId, date } = req.query;
+    if (!userId || !isValidObjectId(userId)) return res.status(400).json({ message: 'Valid userId required' });
+    const day = startOfDayUtc(date);
+    if (!day) return res.status(400).json({ message: 'Invalid date' });
 
-    const base = startOfDayUtc(`${q}T00:00:00Z`);
-    if (!base) return res.status(400).json({ message: 'Invalid date' });
-
-    const rows = await Attendance.find({ date: base }).lean();
-    const records = rows.map(r => ({
-      userId: String(r.user),
-      status: r.status,
-      note: r.note || '',
-      checkIn: r.checkIn ? r.checkIn.toISOString() : null,
-      checkOut: r.checkOut ? r.checkOut.toISOString() : null,
-      workedHours: Number.isFinite(r.workedHours) ? r.workedHours : null,
-    }));
-    res.json({ records });
-  } catch (err) {
-    console.error('byDate error:', err);
+    const doc = await Attendance.findOne({ user: userId, date: day }).lean();
+    res.json({ date: day.toISOString().slice(0, 10), userId, doc });
+  } catch (e) {
+    console.error('byDate error:', e);
     res.status(500).json({ message: 'Server error' });
   }
 }
 
-
-async function byMonth(req, res) {
-const { userId, year, month } = req.query; // month: 1-12
-const forUser = userId && (req.user.role !== 'employee') ? userId : req.user.id;
-const y = parseInt(year, 10), m = parseInt(month, 10) - 1;
-if (isNaN(y) || isNaN(m)) return res.status(400).json({ message: 'Invalid y/m' });
-
-
-const start = new Date(Date.UTC(y, m, 1));
-const end = new Date(Date.UTC(y, m + 1, 1));
-
-
-const rows = await Attendance.find({ user: forUser, date: { $gte: start, $lt: end } })
-.select('date status note')
-.sort({ date: 1 });
-
-
-res.json({ year: y, month: m + 1, days: rows });
-}
-
-
+/**
+ * GET /api/attendance/report/monthly-by-branch?branch=all|Name&year=&month=
+ */
 async function reportMonthlyByBranch(req, res) {
   try {
     const { branch = 'all', year, month } = req.query;
@@ -231,8 +267,8 @@ async function reportMonthlyByBranch(req, res) {
         $project: {
           fullName: 1,
           employeeId: 1,
-          department: { $ifNull: ['$department', '—'] },
-          branch: { $ifNull: ['$branch', '—'] },
+          department: 1,
+          branch: 1,
         }
       },
       {
@@ -261,6 +297,7 @@ async function reportMonthlyByBranch(req, res) {
                 late:         { $sum: { $cond: [{ $eq: ['$status', 'late'] }, 1, 0] } },
                 official_off: { $sum: { $cond: [{ $eq: ['$status', 'official_off'] }, 1, 0] } },
                 short_leave:  { $sum: { $cond: [{ $eq: ['$status', 'short_leave'] }, 1, 0] } },
+                public_holiday: { $sum: { $cond: [{ $eq: ['$status', 'public_holiday'] }, 1, 0] } },
               }
             }
           ],
@@ -284,6 +321,15 @@ async function reportMonthlyByBranch(req, res) {
           late:         { $ifNull: ['$agg.late', 0] },
           official_off: { $ifNull: ['$agg.official_off', 0] },
           short_leave:  { $ifNull: ['$agg.short_leave', 0] },
+          public_holiday: { $ifNull: ['$agg.public_holiday', 0] },
+          paid_days: {
+            $add: [
+              { $ifNull: ['$agg.present', 0] },
+              { $ifNull: ['$agg.leave', 0] },
+              { $ifNull: ['$agg.official_off', 0] },
+              { $ifNull: ['$agg.public_holiday', 0] }
+            ]
+          },
         }
       },
       { $sort: { department: 1, fullName: 1 } }
@@ -297,11 +343,14 @@ async function reportMonthlyByBranch(req, res) {
       rows
     });
   } catch (e) {
-    res.status(500).json({ message: e.message || 'Failed to build report' });
+    res.status(500).json({ message: e.message || 'Failed to build branch report' });
   }
 }
 
-
+/**
+ * GET /api/attendance/report/user-month?userId=&year=&month=
+ * - If caller is employee, userId is ignored and their own data is returned.
+ */
 async function reportUserMonth(req, res) {
   try {
     let { userId, year, month } = req.query;
@@ -322,15 +371,13 @@ async function reportUserMonth(req, res) {
     if (!rng) return res.status(400).json({ message: 'Invalid year/month' });
 
     const rows = await Attendance.find({
-      user: new mongoose.Types.ObjectId(targetUserId),
+      user: targetUserId,
       date: { $gte: rng.start, $lt: rng.end }
-    })
-      .lean()
-      .sort({ date: 1 });
+    }).sort({ date: 1 });
 
     // summarize
     const totals = {
-      present: 0, absent: 0, leave: 0, late: 0, official_off: 0, short_leave: 0
+      present: 0, absent: 0, leave: 0, late: 0, official_off: 0, short_leave: 0, public_holiday: 0
     };
     let workedHours = 0;
 
@@ -342,6 +389,7 @@ async function reportUserMonth(req, res) {
     // consider "productive days" as present + late (tweak if you want)
     const productiveDays = totals.present + totals.late;
     const avgHours = productiveDays > 0 ? Math.round((workedHours / productiveDays) * 100) / 100 : 0;
+    const paidDays = totals.present + totals.leave + totals.official_off + totals.public_holiday;
 
     // per-day listing for the table
     const days = rows.map(r => ({
@@ -355,23 +403,21 @@ async function reportUserMonth(req, res) {
     }));
 
     res.json({
-      meta: {
-        user: {
-          id: String(targetUserId),
-          fullName: user.fullName,
-          employeeId: user.employeeId,
-          department: user.department || '—',
-          branch: user.branch || '—',
-        },
-        year: parseInt(year, 10),
-        month: parseInt(month, 10),
-        range: { start: rng.start.toISOString(), end: rng.end.toISOString() }
+      year: parseInt(year, 10),
+      month: parseInt(month, 10),
+      user: {
+        _id: String(targetUserId),
+        fullName: user.fullName,
+        employeeId: user.employeeId,
+        department: user.department,
+        branch: user.branch
       },
       summary: {
         totals,
         daysMarked: rows.length,
         workedHours: Math.round(workedHours * 100) / 100,
         avgHours,
+        paidDays,
       },
       days
     });

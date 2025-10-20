@@ -2,6 +2,18 @@
 const User = require('../models/User');
 const { toPublicUrl } = require('../utils/url');
 
+function normalizeOfficialOffDays(input) {
+  if (!input) return [];
+  const raw = Array.isArray(input)
+    ? input
+    : String(input).split(/[,;\n]/);
+
+  return raw
+    .map((day) => String(day || "").trim())
+    .filter(Boolean)
+    .map((day) => day.charAt(0).toUpperCase() + day.slice(1).toLowerCase());
+}
+
 async function updateUser(req, res) {
   const { id } = req.params;
 
@@ -10,9 +22,14 @@ async function updateUser(req, res) {
     'fullName',
     'email',
     'department',
+    'designation',
     'branch',
     'city',
     'joiningDate',
+    'bloodGroup',
+    'dutyRoster',
+    'officialOffDays',
+    'contactNumber',
     'isApproved', // approve / reject
     'role',       // role change (extra-guarded below)
     'isTeamLead',
@@ -20,7 +37,35 @@ async function updateUser(req, res) {
 
   const patch = {};
   for (const k of ALLOWED) {
-    if (k in req.body) patch[k] = req.body[k];
+    if (!(k in req.body)) continue;
+    const value = req.body[k];
+    switch (k) {
+      case 'officialOffDays': {
+        patch[k] = normalizeOfficialOffDays(value);
+        break;
+      }
+      case 'dutyRoster': {
+        const roster = String(value || '').trim();
+        patch[k] = roster || '10am to 7pm';
+        break;
+      }
+      case 'bloodGroup': {
+        const group = String(value || '').trim().toUpperCase();
+        patch[k] = group || null;
+        break;
+      }
+      case 'designation':
+      case 'branch':
+      case 'city':
+      case 'contactNumber': {
+        patch[k] = typeof value === 'string' ? value.trim() : value;
+        break;
+      }
+      default: {
+        patch[k] = value;
+        break;
+      }
+    }
   }
 
   // guard: only superadmin can change role
@@ -50,6 +95,11 @@ async function updateUser(req, res) {
       branch: user.branch,
       city: user.city,
       joiningDate: user.joiningDate,
+      designation: user.designation,
+      dutyRoster: user.dutyRoster,
+      officialOffDays: user.officialOffDays || [],
+      bloodGroup: user.bloodGroup || null,
+      contactNumber: user.contactNumber,
       profileImageUrl: toPublicUrl(user.profileImageUrl),
       signatureImageUrl: user.signatureImageUrl || null,
     },
@@ -66,7 +116,7 @@ async function listUsers(req, res) {
     filter.role = role;
   }
   const users = await User.find(filter)
-    .select('fullName email role employeeId department branch city joiningDate isApproved isTeamLead signatureImageUrl profileImageUrl')
+    .select('fullName email role employeeId department designation branch city joiningDate isApproved isTeamLead signatureImageUrl profileImageUrl dutyRoster officialOffDays bloodGroup contactNumber')
     .lean();
   const hydrated = users.map((user) => ({
     ...user,

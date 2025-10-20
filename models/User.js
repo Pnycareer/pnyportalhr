@@ -10,11 +10,35 @@ const UserSchema = new mongoose.Schema(
     cnic: { type: Number, required: true, unique: true },
     email: { type: String, required: true, unique: true, lowercase: true },
     department: { type: String, required: true },
+    designation: { type: String, required: true, trim: true },
     joiningDate: { type: Date, required: true },
 
     // new fields
     branch: { type: String, required: true, trim: true },
     city: { type: String, required: true, trim: true },
+    bloodGroup: {
+      type: String,
+      trim: true,
+      set: (val) => (val ? String(val).toUpperCase() : val),
+    },
+    dutyRoster: {
+      type: String,
+      trim: true,
+      default: "10am to 7pm",
+    },
+    officialOffDays: {
+      type: [String],
+      default: [],
+      set: (val) => {
+        if (!val) return [];
+        const arr = Array.isArray(val) ? val : String(val).split(",");
+        return arr
+          .map((day) => String(day || "").trim())
+          .filter(Boolean)
+          .map((day) => day.charAt(0).toUpperCase() + day.slice(1).toLowerCase());
+      },
+    },
+    contactNumber: { type: String, required: true, trim: true },
 
     // normalized "last active"
     lastActiveAt: { type: Date, default: null },
