@@ -44,10 +44,7 @@ AttendanceSchema.pre('validate', function(next) {
   next();
 });
 
+
 module.exports = mongoose.model('Attendance', AttendanceSchema);
 module.exports.STATUSES = STATUSES;
 module.exports.OFF = OFF;
-
-
-
-

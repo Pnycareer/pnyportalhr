@@ -16,6 +16,7 @@ const UserSchema = new mongoose.Schema(
     // new fields
     branch: { type: String, required: true, trim: true },
     city: { type: String, required: true, trim: true },
+    salary: { type: Number, min: 0, default: null }, // monthly or whatever your unit is
     bloodGroup: {
       type: String,
       trim: true,
@@ -35,16 +36,12 @@ const UserSchema = new mongoose.Schema(
         return arr
           .map((day) => String(day || "").trim())
           .filter(Boolean)
-          .map((day) => day.charAt(0).toUpperCase() + day.slice(1).toLowerCase());
+          .map(
+            (day) => day.charAt(0).toUpperCase() + day.slice(1).toLowerCase()
+          );
       },
     },
     contactNumber: { type: String, required: true, trim: true },
-
-    // normalized "last active"
-    lastActiveAt: { type: Date, default: null },
-    // optional denormalized snapshot if you really want day/time strings
-    lastActiveDay: { type: String, default: null },   // e.g. "Monday"
-    lastActiveTime: { type: String, default: null },  // e.g. "14:37"
 
     // profile image (stored path/URL)
     profileImageUrl: { type: String, default: null },

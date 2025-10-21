@@ -1,6 +1,6 @@
 const allowlist = [
   "http://localhost:5173",
-  "https://pnyportalhr.vercel.app",
+  "https://portal.pnytrainings.com",
   "https://hr.pnytrainings.com",
 ];
 

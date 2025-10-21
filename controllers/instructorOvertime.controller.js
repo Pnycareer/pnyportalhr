@@ -48,12 +48,7 @@ function parseTimeLabel(raw) {
 
 function materializeDateTime(baseDate, minutesFromMidnight) {
   const dt = new Date(baseDate);
-  dt.setUTCHours(
-    Math.floor(minutesFromMidnight / 60),
-    minutesFromMidnight % 60,
-    0,
-    0
-  );
+  dt.setUTCHours(Math.floor(minutesFromMidnight / 60), minutesFromMidnight % 60, 0, 0);
   return dt;
 }
 
@@ -92,7 +87,7 @@ function buildOvertimeSlots(dateInput, rawSlots) {
     };
   });
 
-  // optional: detect overlaps
+  // detect overlaps
   seen
     .sort((a, b) => a.startMinutes - b.startMinutes)
     .reduce((prev, current, idx) => {
@@ -115,7 +110,8 @@ async function resolveTargetUser(req, explicitUserId) {
     return { error: { status: 400, message: "Invalid user reference" } };
   }
 
-  const user = await User.findById(targetId);
+  // IMPORTANT: unlock salary in case it's select:false in the schema
+  const user = await User.findById(targetId).select("+salary");
   if (!user) {
     return { error: { status: 404, message: "User not found" } };
   }
@@ -151,22 +147,28 @@ async function createInstructorOvertime(req, res) {
       return res.status(400).json({ message: "Branch name is required" });
     }
 
-    const noteValue =
-      notes === undefined || notes === null ? "" : String(notes).trim();
+    const noteValue = notes === undefined || notes === null ? "" : String(notes).trim();
 
     const instructorNameValue = String(user.fullName || "").trim();
+    const salaryinfo = String(user.salary || "").trim();
     if (!instructorNameValue) {
       return res.status(400).json({ message: "Instructor name is missing on user profile" });
+    }
+    if (!salaryinfo) {
+      return res.status(400).json({ message: "Salary missing on user profile" });
     }
 
     const designationValue = String(user.designation || "").trim();
     if (!designationValue) {
-      return res.status(400).json({ message: "Instructor designation is required on user profile" });
+      return res
+        .status(400)
+        .json({ message: "Instructor designation is required on user profile" });
     }
 
     const claim = new InstructorOvertime({
       instructor: user._id,
       instructorName: instructorNameValue,
+      salary:salaryinfo,
       date: parsedSlots.normalizedDate,
       designation: designationValue,
       branchName: branchValue,
@@ -174,18 +176,28 @@ async function createInstructorOvertime(req, res) {
       notes: noteValue,
     });
 
+    // If admin supplied salary explicitly, validate and use it
     if (isAdmin(req.user?.role) && salary !== undefined) {
       const numericSalary = Number(salary);
       if (!Number.isFinite(numericSalary) || numericSalary < 0) {
-        return res.status(400).json({ message: "Salary must be a positive number" });
+        return res.status(400).json({ message: "Salary must be a non-negative number" });
       }
       claim.salary = numericSalary;
+    }
+
+    // Otherwise default to the user's stored salary (auto-fill)
+    if (claim.salary === undefined || claim.salary === null) {
+      const numericProfileSalary = Number(user.salary);
+      if (Number.isFinite(numericProfileSalary) && numericProfileSalary >= 0) {
+        claim.salary = numericProfileSalary;
+      }
     }
 
     await claim.save();
     await claim.populate({
       path: "instructor",
-      select: "fullName designation branch email employeeId role",
+      // IMPORTANT: unlock salary on the populated user too
+      select: "fullName designation branch email employeeId role +salary",
     });
 
     return res.status(201).json(claim);
@@ -218,7 +230,8 @@ async function listInstructorOvertime(req, res) {
       .sort({ date: -1, createdAt: -1 })
       .populate({
         path: "instructor",
-        select: "fullName designation branch email employeeId role",
+        // IMPORTANT: unlock salary here
+        select: "fullName designation branch email employeeId role +salary",
       });
 
     return res.json(results);
@@ -236,7 +249,8 @@ async function getInstructorOvertime(req, res) {
     }
     const claim = await InstructorOvertime.findById(id).populate({
       path: "instructor",
-      select: "fullName designation branch email employeeId role",
+      // IMPORTANT: unlock salary here
+      select: "fullName designation branch email employeeId role +salary",
     });
     if (!claim) {
       return res.status(404).json({ message: "Overtime claim not found" });
@@ -263,7 +277,8 @@ async function updateInstructorOvertime(req, res) {
 
     const claim = await InstructorOvertime.findById(id).populate({
       path: "instructor",
-      select: "fullName designation branch email employeeId role",
+      // IMPORTANT: unlock salary here
+      select: "fullName designation branch email employeeId role +salary",
     });
     if (!claim) {
       return res.status(404).json({ message: "Overtime claim not found" });
@@ -330,7 +345,7 @@ async function updateInstructorOvertime(req, res) {
       }
       const numericSalary = Number(req.body.salary);
       if (!Number.isFinite(numericSalary) || numericSalary < 0) {
-        return res.status(400).json({ message: "Salary must be a positive number" });
+        return res.status(400).json({ message: "Salary must be a non-negative number" });
       }
       updates.salary = numericSalary;
     }
@@ -346,8 +361,9 @@ async function updateInstructorOvertime(req, res) {
 
     // refresh snapshot info from user if required
     if (claim.instructor) {
+      // we already populated instructor with +salary above
       const userSnapshot =
-        claim.instructor.fullName !== undefined ? claim.instructor : await User.findById(claim.instructor);
+        claim.instructor.fullName !== undefined ? claim.instructor : await User.findById(claim.instructor).select("+salary");
       if (userSnapshot) {
         const fullName = String(userSnapshot.fullName || "").trim();
         if (fullName) {
@@ -369,7 +385,8 @@ async function updateInstructorOvertime(req, res) {
     await claim.save();
     await claim.populate({
       path: "instructor",
-      select: "fullName designation branch email employeeId role",
+      // IMPORTANT: unlock salary here too
+      select: "fullName designation branch email employeeId role +salary",
     });
 
     return res.json(claim);
