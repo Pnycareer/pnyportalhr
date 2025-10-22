@@ -12,6 +12,7 @@ const {
   updateLeaveTeamLead,
   reportLeaveMonthly,
   reportLeaveYearly,
+  updateLeaveAllowance,
 } = require("../controllers/leaves.controller");
 
 router.post(
@@ -68,6 +69,13 @@ router.get(
   auth(),
   allow("superadmin", "admin", "hr", "employee"),
   reportLeaveYearly
+);
+
+router.put(
+  "/allowance",
+  auth(),
+  allow("superadmin", "admin", "hr"),
+  updateLeaveAllowance
 );
 
 module.exports = router;

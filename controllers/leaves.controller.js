@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const Leave = require("../models/Leave");
 const User = require("../models/User");
 const { leaveStatuses } = require("../models/Leave");
+const LeaveAllowance = require("../models/LeaveAllowance");
 const { toPublicUrl } = require("../utils/url");
 const { emitToUser } = require("../services/socket.service");
 
@@ -88,21 +89,54 @@ async function computeYearlyUsage(userId, referenceDate, excludeIds = []) {
   return accepted.reduce((sum, doc) => sum + computeDurationDays(doc), 0);
 }
 
-async function getAnnualAllowance(userId, referenceDate, cache) {
+async function getAnnualAllowance(userId, referenceDate, cache, overrideCache = new Map()) {
   if (!referenceDate) {
     return {
       allowed: ALLOWED_LEAVES_PER_YEAR,
       used: 0,
       remaining: ALLOWED_LEAVES_PER_YEAR,
+      actualUsed: 0,
     };
   }
   const key = `${String(userId)}::${yearKey(referenceDate)}`;
   if (cache.has(key)) return cache.get(key);
-  const used = await computeYearlyUsage(userId, referenceDate);
+  const year = new Date(referenceDate).getUTCFullYear();
+
+  const overrideKey = `${String(userId)}::${year}`;
+  let override = overrideCache.get(overrideKey);
+  if (override === undefined) {
+    override = await LeaveAllowance.findOne({
+      user: userId,
+      year,
+    }).lean();
+    overrideCache.set(overrideKey, override || null);
+  }
+
+  const baseUsed = await computeYearlyUsage(userId, referenceDate);
+  let allowed = ALLOWED_LEAVES_PER_YEAR;
+  const candidateUsedValues = [baseUsed];
+  if (override) {
+    if (Number.isFinite(override.allowed)) {
+      allowed = Math.max(override.allowed, 0);
+    }
+    if (Number.isFinite(override.used)) {
+      candidateUsedValues.push(Math.max(override.used, 0));
+    }
+    if (Number.isFinite(override.remaining)) {
+      const remainingFromOverride = Math.max(override.remaining, 0);
+      const derivedUsed = allowed - remainingFromOverride;
+      if (Number.isFinite(derivedUsed)) {
+        candidateUsedValues.push(Math.max(derivedUsed, 0));
+      }
+    }
+  }
+  const normalizedAllowed = Math.max(allowed, 0);
+  const normalizedUsed = Math.max(...candidateUsedValues);
   const allowance = {
-    allowed: ALLOWED_LEAVES_PER_YEAR,
-    used,
-    remaining: Math.max(ALLOWED_LEAVES_PER_YEAR - used, 0),
+    allowed: normalizedAllowed,
+    used: normalizedUsed,
+    remaining: Math.max(normalizedAllowed - normalizedUsed, 0),
+    actualUsed: baseUsed,
   };
   cache.set(key, allowance);
   return allowance;
@@ -123,6 +157,11 @@ function toNumberOrNull(value) {
 function toStringOrEmpty(value) {
   if (value === null || value === undefined) return "";
   return String(value).trim();
+}
+
+function formatDaysValue(value) {
+  if (!Number.isFinite(value)) return "0";
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
 function parseTimeToMinutes(value) {
@@ -429,9 +468,15 @@ async function listLeaves(req, res) {
       .lean();
 
     const allowanceCache = new Map();
+    const allowanceOverrideCache = new Map();
     const enriched = [];
     for (const leave of leaves) {
-      const allowance = await getAnnualAllowance(leave.user, leave.fromDate, allowanceCache);
+      const allowance = await getAnnualAllowance(
+        leave.user,
+        leave.fromDate,
+        allowanceCache,
+        allowanceOverrideCache
+      );
       enriched.push({
         ...leave,
         annualAllowance: allowance ? { ...allowance } : { allowed: ALLOWED_LEAVES_PER_YEAR, used: 0, remaining: ALLOWED_LEAVES_PER_YEAR },
@@ -465,7 +510,7 @@ async function getLeave(req, res) {
       }
     }
 
-    const allowance = await getAnnualAllowance(leave.user, leave.fromDate, new Map());
+    const allowance = await getAnnualAllowance(leave.user, leave.fromDate, new Map(), new Map());
     const payload = leave.toObject();
     payload.annualAllowance = allowance;
     return res.json(payload);
@@ -491,28 +536,56 @@ async function updateLeaveStatus(req, res) {
 
     const baseUsage = await computeYearlyUsage(leave.user, leave.fromDate, [leave._id]);
     const currentDuration = computeDurationDays(leave);
+    const year = new Date(leave.fromDate || Date.now()).getUTCFullYear();
+    const override = await LeaveAllowance.findOne({
+      user: leave.user,
+      year,
+    }).lean();
+
+    const allowedValue = override?.allowed ?? ALLOWED_LEAVES_PER_YEAR;
+    const manualUsed = override?.used;
+    const baselineUsed = manualUsed !== undefined && manualUsed !== null
+      ? Math.max(manualUsed, 0)
+      : baseUsage;
+    const effectiveUsed = Math.max(baselineUsed, baseUsage);
+
+    let resultingUsed = effectiveUsed;
 
     if (status === "accepted") {
-      const totalUsed = baseUsage + currentDuration;
-      if (totalUsed > ALLOWED_LEAVES_PER_YEAR) {
-        const remaining = Math.max(ALLOWED_LEAVES_PER_YEAR - baseUsage, 0);
+      const prospectiveUsed = effectiveUsed + currentDuration;
+      if (prospectiveUsed > allowedValue) {
+        const remaining = Math.max(allowedValue - effectiveUsed, 0);
         return res
           .status(400)
           .json({ message: `Annual leave limit exceeded. Remaining leaves: ${remaining}` });
       }
-      leave.hrSection = leave.hrSection || {};
-      leave.hrSection.annualAllowance = {
-        allowed: ALLOWED_LEAVES_PER_YEAR,
-        used: totalUsed,
-        remaining: Math.max(ALLOWED_LEAVES_PER_YEAR - totalUsed, 0),
-      };
-    } else if (leave.hrSection) {
-      const totalUsed = baseUsage;
-      leave.hrSection.annualAllowance = {
-        allowed: ALLOWED_LEAVES_PER_YEAR,
-        used: totalUsed,
-        remaining: Math.max(ALLOWED_LEAVES_PER_YEAR - totalUsed, 0),
-      };
+      resultingUsed = prospectiveUsed;
+    } else {
+      resultingUsed = effectiveUsed;
+    }
+
+    const resultingRemaining = Math.max(allowedValue - resultingUsed, 0);
+
+    leave.hrSection = leave.hrSection || {};
+    leave.hrSection.annualAllowance = {
+      allowed: allowedValue,
+      used: resultingUsed,
+      remaining: resultingRemaining,
+    };
+
+    if (override || status === "accepted") {
+      await LeaveAllowance.findOneAndUpdate(
+        { user: leave.user, year },
+        {
+          $set: {
+            allowed: allowedValue,
+            used: resultingUsed,
+            remaining: resultingRemaining,
+            updatedBy: new mongoose.Types.ObjectId(req.user.id),
+          },
+        },
+        { upsert: true, new: false, setDefaultsOnInsert: true }
+      );
     }
 
     leave.status = status;
@@ -704,6 +777,38 @@ function applyHrSectionUpdates(leave, hrSection) {
   if (hrSection.employmentStatus !== undefined) section.employmentStatus = hrSection.employmentStatus || null;
   if (hrSection.decisionForForm !== undefined) section.decisionForForm = hrSection.decisionForForm;
 
+  if (hrSection.annualAllowance && typeof hrSection.annualAllowance === "object") {
+    const allowanceSection = section.annualAllowance || {};
+    const allowedValue = toNumberOrNull(hrSection.annualAllowance.allowed);
+    const remainingValue = toNumberOrNull(hrSection.annualAllowance.remaining);
+    const usedValue = toNumberOrNull(hrSection.annualAllowance.used);
+
+    if (allowedValue !== null) {
+      allowanceSection.allowed = Math.max(allowedValue, 0);
+    }
+    if (usedValue !== null) {
+      allowanceSection.used = Math.max(usedValue, 0);
+    }
+    if (remainingValue !== null) {
+      allowanceSection.remaining = Math.max(remainingValue, 0);
+    }
+
+    if (allowanceSection.allowed !== undefined) {
+      if (allowanceSection.remaining === undefined && allowanceSection.used !== undefined) {
+        allowanceSection.remaining = Math.max(allowanceSection.allowed - allowanceSection.used, 0);
+      } else if (allowanceSection.used === undefined && allowanceSection.remaining !== undefined) {
+        allowanceSection.used = Math.max(allowanceSection.allowed - allowanceSection.remaining, 0);
+      }
+      allowanceSection.used = Math.min(allowanceSection.used || 0, allowanceSection.allowed);
+      allowanceSection.remaining = Math.max(
+        allowanceSection.allowed - (allowanceSection.used || 0),
+        0
+      );
+    }
+
+    section.annualAllowance = allowanceSection;
+  }
+
   leave.hrSection = section;
 }
 
@@ -731,7 +836,7 @@ async function reportLeaveMonthly(req, res) {
       .sort({ fromDate: 1 })
       .lean();
 
-    const allowance = await getAnnualAllowance(targetId, rng.start, new Map());
+    const allowance = await getAnnualAllowance(targetId, rng.start, new Map(), new Map());
 
     let requested = 0;
     let approved = 0;
@@ -843,6 +948,23 @@ async function reportLeaveYearly(req, res) {
       }
     }
 
+    let allowed = ALLOWED_LEAVES_PER_YEAR;
+    let remaining = Math.max(ALLOWED_LEAVES_PER_YEAR - totalApproved, 0);
+    const override = await LeaveAllowance.findOne({
+      user: targetId,
+      year: y,
+    }).lean();
+    if (override) {
+      if (Number.isFinite(override.allowed)) {
+        allowed = override.allowed;
+      }
+      if (Number.isFinite(override.remaining)) {
+        remaining = Math.max(override.remaining, 0);
+      } else if (Number.isFinite(override.used)) {
+        remaining = Math.max(allowed - override.used, 0);
+      }
+    }
+
     return res.json({
       user: {
         id: String(user._id),
@@ -859,13 +981,87 @@ async function reportLeaveYearly(req, res) {
       totals: {
         requested: totalRequested,
         approved: totalApproved,
-        allowed: ALLOWED_LEAVES_PER_YEAR,
-        remaining: Math.max(ALLOWED_LEAVES_PER_YEAR - totalApproved, 0),
+        allowed,
+        remaining,
       },
     });
   } catch (err) {
     console.error("reportLeaveYearly error:", err);
     return res.status(500).json({ message: "Failed to build yearly report" });
+  }
+}
+
+async function updateLeaveAllowance(req, res) {
+  try {
+    if (!isAdmin(req.user?.role)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    const { userId, year, allowed, remaining } = req.body || {};
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user reference" });
+    }
+    const parsedYear = parseInt(year, 10);
+    if (!Number.isInteger(parsedYear) || parsedYear < 1970) {
+      return res.status(400).json({ message: "Invalid year value" });
+    }
+    const allowedValue = Number(allowed);
+    const remainingValue = Number(remaining);
+    if (!Number.isFinite(allowedValue) || allowedValue < 0) {
+      return res.status(400).json({ message: "Allowed leaves must be a non-negative number" });
+    }
+    if (!Number.isFinite(remainingValue) || remainingValue < 0) {
+      return res.status(400).json({ message: "Remaining balance must be a non-negative number" });
+    }
+    if (remainingValue > allowedValue) {
+      return res.status(400).json({ message: "Remaining balance cannot exceed total allowance" });
+    }
+
+    const usedValue = Math.max(allowedValue - remainingValue, 0);
+    const referenceDate = new Date(Date.UTC(parsedYear, 0, 1));
+    const actualUsage = await computeYearlyUsage(userId, referenceDate);
+    const epsilon = 0.0001;
+    if (usedValue + epsilon < actualUsage) {
+      const maxRemaining = Math.max(allowedValue - actualUsage, 0);
+      const approvedText =
+        actualUsage === 1
+          ? "1 day has already been approved this year"
+          : `${formatDaysValue(actualUsage)} days have already been approved this year`;
+      return res.status(400).json({
+        message: `Remaining balance cannot exceed ${formatDaysValue(maxRemaining)} day(s) because ${approvedText}.`,
+        details: {
+          actualUsed: actualUsage,
+          maxRemaining,
+        },
+      });
+    }
+
+    const updated = await LeaveAllowance.findOneAndUpdate(
+      { user: userId, year: parsedYear },
+      {
+        $set: {
+          allowed: allowedValue,
+          remaining: remainingValue,
+          used: usedValue,
+          updatedBy: new mongoose.Types.ObjectId(req.user.id),
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    ).lean();
+
+    return res.json({
+      userId: String(updated.user),
+      year: updated.year,
+      allowed: updated.allowed,
+      remaining: updated.remaining,
+      used: updated.used,
+      actualUsed: actualUsage,
+      maxRemaining: Math.max(updated.allowed - actualUsage, 0),
+      updatedAt: updated.updatedAt,
+    });
+  } catch (err) {
+    console.error("updateLeaveAllowance error:", err);
+    return res.status(500).json({ message: "Failed to update allowance" });
   }
 }
 
@@ -878,6 +1074,7 @@ module.exports = {
   updateLeaveTeamLead,
   reportLeaveMonthly,
   reportLeaveYearly,
+  updateLeaveAllowance,
 };
 
 

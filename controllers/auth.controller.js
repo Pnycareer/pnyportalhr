@@ -6,12 +6,11 @@ const { sendOtpEmail } = require("../utils/email");
 const { generateOtp, hashOtp, expiryFromNow } = require("../utils/otp");
 const generateToken = require("../utils/generatetoken");
 const { toPublicUrl } = require("../utils/url");
+const mongoose = require("mongoose");
 
 function normalizeOfficialOffDays(input) {
   if (!input) return [];
-  const raw = Array.isArray(input)
-    ? input
-    : String(input).split(/[,;\n]/);
+  const raw = Array.isArray(input) ? input : String(input).split(/[,;\n]/);
 
   return raw
     .map((day) => String(day || "").trim())
@@ -70,7 +69,9 @@ async function register(req, res) {
       designation,
       dutyRoster: dutyRoster ? String(dutyRoster).trim() : undefined,
       officialOffDays: normalizeOfficialOffDays(officialOffDays),
-      bloodGroup: bloodGroup ? String(bloodGroup).trim().toUpperCase() : undefined,
+      bloodGroup: bloodGroup
+        ? String(bloodGroup).trim().toUpperCase()
+        : undefined,
       contactNumber: contactNumber ? String(contactNumber).trim() : undefined,
       role: "employee",
       isApproved: false,
@@ -169,24 +170,29 @@ async function resendEmailOtp(req, res) {
 }
 
 async function login(req, res) {
-  const { email, password } = req.body
+  const { email, password } = req.body;
   try {
-    requiredFields(req.body, ['email', 'password'])
+    requiredFields(req.body, ["email", "password"]);
 
-    const user = await User.findOne({ email })
-    if (!user) return res.status(400).json({ message: 'Invalid credentials' })
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
-    const ok = await user.validatePassword(password)
-    if (!ok) return res.status(400).json({ message: 'Invalid credentials' })
+    const ok = await user.validatePassword(password);
+    if (!ok) return res.status(400).json({ message: "Invalid credentials" });
 
     if (!user.emailVerified)
-      return res.status(403).json({ message: 'Please verify your email via OTP first' })
+      return res
+        .status(403)
+        .json({ message: "Please verify your email via OTP first" });
 
     if (!user.isApproved)
-      return res.status(403).json({ message: 'Account awaiting approval' })
+      return res.status(403).json({ message: "Account awaiting approval" });
 
     // >>> generate + set cookie
-    generateToken({ id: user._id, role: user.role, isTeamLead: user.isTeamLead }, res)
+    generateToken(
+      { id: user._id, role: user.role, isTeamLead: user.isTeamLead },
+      res
+    );
 
     // send public profile
     res.json({
@@ -198,15 +204,15 @@ async function login(req, res) {
       isTeamLead: user.isTeamLead,
       profileImageUrl: toPublicUrl(user.profileImageUrl),
       signatureImageUrl: user.signatureImageUrl || null,
-    })
+    });
   } catch (e) {
-    res.status(e.status || 500).json({ message: e.message })
+    res.status(e.status || 500).json({ message: e.message });
   }
 }
 
 async function getMe(req, res) {
   try {
-    const user = await User.findById(req.user.id)
+    const user = await User.findById(req.user.id);
 
     if (!user) return res.status(404).json({ message: "User not found" });
     const data = user.toObject();
@@ -220,6 +226,45 @@ async function getMe(req, res) {
 function logout(req, res) {
   res.clearCookie("token").json({ message: "Logged out" });
 }
+
+
+// (async () => {
+//   try {
+//     await mongoose.connect(process.env.MONGO_URI);
+
+//     // Find users where designation or contactNumber is null or undefined
+//     const missing = await User.find({
+//       $or: [
+//         { designation: { $in: [null, undefined] } },
+//         { contactNumber: { $in: [null, undefined] } },
+//       ],
+//     });
+
+//     const ops = missing.map((u) => ({
+//       updateOne: {
+//         filter: { _id: u._id },
+//         update: {
+//           $set: {
+//             designation: "undefined",
+//             contactNumber: "undefined",
+//           },
+//         },
+//       },
+//     }));
+
+//     if (ops.length) {
+//       const res = await User.bulkWrite(ops, { ordered: false });
+//       console.log("Backfill done:", res.result);
+//     } else {
+//       console.log("No users to backfill.");
+//     }
+
+//     await mongoose.disconnect();
+//   } catch (e) {
+//     console.error(e);
+//     process.exit(1);
+//   }
+// })();
 
 module.exports = {
   register,

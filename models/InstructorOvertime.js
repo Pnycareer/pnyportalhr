@@ -42,7 +42,10 @@ const InstructorOvertimeSchema = new mongoose.Schema(
       default: [],
       validate: {
         validator(slots) {
-          return Array.isArray(slots) && slots.every((slot) => slot.durationMinutes >= 0);
+          return (
+            Array.isArray(slots) &&
+            slots.every((slot) => slot.durationMinutes >= 0)
+          );
         },
         message: "Invalid overtime slot",
       },
@@ -62,6 +65,7 @@ const InstructorOvertimeSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    verified: { type: Boolean, default: false, index: true },
     notes: {
       type: String,
       trim: true,
@@ -77,7 +81,8 @@ InstructorOvertimeSchema.pre("validate", function computeTotals(next) {
     doc.overtimeSlots = [];
   }
   const totalMinutes = doc.overtimeSlots.reduce(
-    (sum, slot) => sum + (Number.isFinite(slot.durationMinutes) ? slot.durationMinutes : 0),
+    (sum, slot) =>
+      sum + (Number.isFinite(slot.durationMinutes) ? slot.durationMinutes : 0),
     0
   );
   doc.totalDurationMinutes = totalMinutes;
