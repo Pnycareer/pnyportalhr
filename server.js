@@ -29,6 +29,7 @@ app.use("/api/users", require("./routes/users.routes"));
 app.use("/api/attendance", require("./routes/attendance.routes"));
 app.use("/api/leaves", require("./routes/leaves.routes"));
 app.use("/api/instructor-overtime", require("./routes/instructorOvertime.routes"));
+app.use("/api/fuel-requisitions", require("./routes/fuelRequisition.routes"));
 
 // sockets
 const io = initSocket(server, allowlist);
