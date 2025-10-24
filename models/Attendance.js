@@ -17,6 +17,9 @@ const AttendanceSchema = new mongoose.Schema(
     checkIn: { type: Date, default: null },
     checkOut: { type: Date, default: null },
 
+    checkInSnapshotUrl: { type: String, default: null },
+    checkOutSnapshotUrl: { type: String, default: null },
+
     // Persisted computed duration in HOURS (decimal). null if not applicable.
     workedHours: { type: Number, min: 0, default: null },
   },
@@ -30,6 +33,8 @@ AttendanceSchema.pre('validate', function(next) {
   if (OFF.has(this.status)) {
     this.checkIn = null;
     this.checkOut = null;
+    this.checkInSnapshotUrl = null;
+    this.checkOutSnapshotUrl = null;
     this.workedHours = null;
   } else if (this.checkIn && this.checkOut) {
     if (this.checkOut < this.checkIn) {

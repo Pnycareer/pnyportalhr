@@ -2,6 +2,8 @@ const Attendance = require('../models/Attendance');
 const User = require('../models/User');
 const { OFF } = require('../models/Attendance');
 const mongoose = require('mongoose')
+const fs = require('fs/promises');
+const path = require('path');
 
 function monthRangeUTC(year, month1to12) {
   const y = parseInt(year, 10);
@@ -86,6 +88,59 @@ function buildSetPayload({ status, note, checkIn, checkOut, markedBy, isOff }) {
   return set;
 }
 
+function localDayAnchor(dateLike, timezoneOffsetMinutes) {
+  const date = new Date(dateLike);
+  if (isNaN(date)) return null;
+  const parsedOffset = Number(timezoneOffsetMinutes);
+  const offset = Number.isFinite(parsedOffset) ? parsedOffset : 0;
+  const shifted = new Date(date.getTime() - offset * 60000);
+  const utcMidnight = Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    shifted.getUTCDate()
+  );
+  return new Date(utcMidnight);
+}
+
+const SNAPSHOT_DIR = path.join(__dirname, '..', 'uploads', 'attendance');
+const SNAPSHOT_MIME_EXT = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/webp': 'webp',
+};
+
+async function storeAttendanceSnapshot({ dataUrl, userId, action }) {
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image')) {
+    throw new Error('Invalid snapshot payload');
+  }
+
+  const match = /^data:(image\/[a-zA-Z0-9.+\-]+);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl.trim());
+  if (!match) {
+    throw new Error('Invalid snapshot encoding');
+  }
+
+  const mime = match[1].toLowerCase();
+  const ext = SNAPSHOT_MIME_EXT[mime];
+  if (!ext) {
+    throw new Error('Unsupported image format');
+  }
+
+  const buffer = Buffer.from(match[2], 'base64');
+  if (!buffer.length) {
+    throw new Error('Empty snapshot received');
+  }
+
+  await fs.mkdir(SNAPSHOT_DIR, { recursive: true });
+
+  const filename = `${String(userId)}-${Date.now()}-${action}.${ext}`;
+  const filepath = path.join(SNAPSHOT_DIR, filename);
+
+  await fs.writeFile(filepath, buffer);
+
+  return `/uploads/attendance/${filename}`;
+}
+
 // --- mark ---
 async function mark(req, res) {
   try {
@@ -119,6 +174,155 @@ async function mark(req, res) {
     res.json(upsert);
   } catch (err) {
     console.error('mark error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+}
+
+async function markSelf(req, res) {
+  try {
+    if (!req.user || req.user.role !== 'employee') {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const { password, action, note, status, timezoneOffset, snapshot } = req.body || {};
+
+    const normalizedAction = String(action || '').trim().toLowerCase();
+    if (!['check-in', 'check-out'].includes(normalizedAction)) {
+      return res.status(400).json({ message: 'action must be `check-in` or `check-out`' });
+    }
+
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ message: 'password is required' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user.isApproved) {
+      return res.status(403).json({ message: 'Account awaiting approval' });
+    }
+
+    const validPassword = await user.validatePassword(password);
+    if (!validPassword) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const now = new Date();
+    const base = localDayAnchor(now, timezoneOffset);
+    if (!base) return res.status(400).json({ message: 'Unable to determine working day' });
+    let attendance = await Attendance.findOne({ user: user._id, date: base });
+    const trimmedNote = typeof note === 'string' ? note.trim() : '';
+
+    if (normalizedAction === 'check-in') {
+      if (attendance && attendance.checkIn) {
+        return res.status(409).json({ message: 'Check-in already recorded for today' });
+      }
+
+      const normalizedStatus = normalizeStatus(status) || (attendance ? attendance.status : 'present');
+      if (!normalizedStatus || !ALLOWED.includes(normalizedStatus)) {
+        return res.status(400).json({ message: 'Invalid status' });
+      }
+      if (OFF.has(normalizedStatus)) {
+        return res.status(400).json({ message: 'Cannot check in with an off status' });
+      }
+
+      const snapshotData = typeof snapshot === 'string' ? snapshot.trim() : '';
+      if (!snapshotData) {
+        return res.status(400).json({ message: 'Face snapshot is required for check-in' });
+      }
+
+      let snapshotUrl;
+      try {
+        snapshotUrl = await storeAttendanceSnapshot({
+          dataUrl: snapshotData,
+          userId: user._id,
+          action: 'check-in',
+        });
+      } catch (error) {
+        return res.status(400).json({ message: error.message || 'Failed to store snapshot' });
+      }
+
+      if (!attendance) {
+        attendance = new Attendance({
+          user: user._id,
+          date: base,
+          status: normalizedStatus,
+          markedBy: user._id,
+          note: trimmedNote,
+          checkIn: now,
+          checkOut: null,
+          checkInSnapshotUrl: snapshotUrl,
+          checkOutSnapshotUrl: null,
+        });
+      } else {
+        attendance.status = normalizedStatus;
+        attendance.checkIn = now;
+        attendance.checkOut = null;
+        attendance.workedHours = null;
+        attendance.markedBy = user._id;
+        attendance.checkInSnapshotUrl = snapshotUrl;
+        attendance.checkOutSnapshotUrl = null;
+        if (trimmedNote) attendance.note = trimmedNote;
+      }
+    } else {
+      if (!attendance || !attendance.checkIn) {
+        return res.status(409).json({ message: 'No check-in found for today' });
+      }
+      if (attendance.checkOut) {
+        return res.status(409).json({ message: 'Check-out already recorded for today' });
+      }
+
+      const normalizedStatus = normalizeStatus(status) || attendance.status || 'present';
+      if (!normalizedStatus || !ALLOWED.includes(normalizedStatus)) {
+        return res.status(400).json({ message: 'Invalid status' });
+      }
+      if (OFF.has(normalizedStatus)) {
+        return res.status(400).json({ message: 'Cannot mark check-out with an off status' });
+      }
+
+      const snapshotData = typeof snapshot === 'string' ? snapshot.trim() : '';
+      if (!snapshotData) {
+        return res.status(400).json({ message: 'Face snapshot is required for check-out' });
+      }
+
+      let snapshotUrl;
+      try {
+        snapshotUrl = await storeAttendanceSnapshot({
+          dataUrl: snapshotData,
+          userId: user._id,
+          action: 'check-out',
+        });
+      } catch (error) {
+        return res.status(400).json({ message: error.message || 'Failed to store snapshot' });
+      }
+
+      attendance.status = normalizedStatus;
+      attendance.checkOut = now;
+      attendance.markedBy = user._id;
+      attendance.checkOutSnapshotUrl = snapshotUrl;
+      if (trimmedNote) attendance.note = trimmedNote;
+    }
+
+    await attendance.save();
+    const record = attendance.toObject();
+
+  res.json({
+    message: normalizedAction === 'check-in' ? 'Check-in recorded' : 'Check-out recorded',
+    attendance: {
+      id: record._id,
+      date: record.date,
+      status: record.status,
+      note: record.note || '',
+      checkIn: record.checkIn,
+      checkOut: record.checkOut,
+      checkInSnapshotUrl: record.checkInSnapshotUrl || null,
+      checkOutSnapshotUrl: record.checkOutSnapshotUrl || null,
+      workedHours: record.workedHours,
+      markedBy: record.markedBy,
+      user: record.user,
+    },
+  });
+  } catch (err) {
+    console.error('markSelf error:', err);
     res.status(500).json({ message: 'Server error' });
   }
 }
@@ -174,7 +378,7 @@ async function byDate(req, res) {
     const q = req.query?.date;
     if (!q) return res.status(400).json({ message: 'Missing date' });
 
-    const base = startOfDayUtc(`${q}T00:00:00Z`);
+    const base = localDayAnchor(`${q}T00:00:00`, req.query?.timezoneOffset);
     if (!base) return res.status(400).json({ message: 'Invalid date' });
 
     const rows = await Attendance.find({ date: base }).lean();
@@ -184,6 +388,8 @@ async function byDate(req, res) {
       note: r.note || '',
       checkIn: r.checkIn ? r.checkIn.toISOString() : null,
       checkOut: r.checkOut ? r.checkOut.toISOString() : null,
+      checkInSnapshotUrl: r.checkInSnapshotUrl || null,
+      checkOutSnapshotUrl: r.checkOutSnapshotUrl || null,
       workedHours: Number.isFinite(r.workedHours) ? r.workedHours : null,
     }));
     res.json({ records });
@@ -382,4 +588,12 @@ async function reportUserMonth(req, res) {
 }
 
 
-module.exports = { mark, bulk, byMonth , byDate , reportMonthlyByBranch , reportUserMonth};
+module.exports = {
+  mark,
+  markSelf,
+  bulk,
+  byMonth,
+  byDate,
+  reportMonthlyByBranch,
+  reportUserMonth,
+};

@@ -4,6 +4,7 @@ const auth = require("../middleware/auth");
 const allow = require("../middleware/rbac");
 const {
   mark,
+  markSelf,
   bulk,
   byMonth,
   byDate,
@@ -12,6 +13,12 @@ const {
 } = require("../controllers/attendance.controller");
 
 router.post("/mark", auth(), allow("superadmin", "admin", "hr"), mark);
+router.post(
+  "/self/mark",
+  auth(),
+  allow("employee"),
+  markSelf
+);
 router.post("/bulk", auth(), allow("superadmin", "admin", "hr"), bulk);
 router.get(
   "/report/monthly",
