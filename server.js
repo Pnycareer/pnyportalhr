@@ -19,6 +19,9 @@ app.use(cors(corsOptions));
 // health + test
 app.get("/health", (req, res) => res.json({ ok: true }));
 app.get("/test", (req, res) => res.send("Server is alive")); // no wildcard header
+app.get("/debug/ip", (req, res) => {
+  res.json({ ip: req.ip, forwarded: req.headers["x-forwarded-for"] });
+});
 
 // static
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
