@@ -111,35 +111,6 @@ const SNAPSHOT_MIME_EXT = {
   'image/webp': 'webp',
 };
 
-function extractClientIps(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded) {
-    return String(forwarded)
-      .split(',')
-      .map((ip) => ip.trim())
-      .filter(Boolean);
-  }
-  const remote = req.connection?.remoteAddress || req.socket?.remoteAddress || req.ip;
-  return remote ? [remote] : [];
-}
-
-function normalizeIp(ip) {
-  if (!ip) return null;
-  let cleaned = String(ip).trim();
-  if (!cleaned) return null;
-  if (cleaned.startsWith('::ffff:')) {
-    cleaned = cleaned.slice(7);
-  }
-  return cleaned;
-}
-
-function isIpAllowed(req) {
-  if (!allowedAttendanceIps.length) return true;
-  const clientIps = extractClientIps(req).map(normalizeIp).filter(Boolean);
-  if (!clientIps.length) return false;
-  return clientIps.some((ip) => allowedAttendanceIps.includes(ip));
-}
-
 async function storeAttendanceSnapshot({ dataUrl, userId, action }) {
   if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image')) {
     throw new Error('Invalid snapshot payload');
@@ -234,10 +205,6 @@ async function markSelf(req, res) {
     const validPassword = await user.validatePassword(password);
     if (!validPassword) {
       return res.status(401).json({ message: 'Invalid credentials' });
-    }
-
-    if (!isIpAllowed(req)) {
-      return res.status(403).json({ message: 'Attendance marking is not permitted from this network' });
     }
 
     const now = new Date();

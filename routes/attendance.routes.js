@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const auth = require("../middleware/auth");
 const allow = require("../middleware/rbac");
+const attendanceIpGuard = require("../middleware/attendanceIpGuard");
 const {
   mark,
   markSelf,
@@ -17,6 +18,7 @@ router.post(
   "/self/mark",
   auth(),
   allow("employee"),
+  attendanceIpGuard,
   markSelf
 );
 router.post("/bulk", auth(), allow("superadmin", "admin", "hr"), bulk);

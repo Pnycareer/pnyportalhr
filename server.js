@@ -13,7 +13,7 @@ const server = http.createServer(app);
 
 app.use(express.json());
 app.use(cookieParser());
-app.set("trust proxy", 1); // or true
+app.set('trust proxy', true); 
 app.use(cors(corsOptions));
 
 // health + test
