@@ -7,6 +7,10 @@ const mongoose = require("mongoose");
 const path = require("path");
 const { corsOptions, allowlist } = require("./config/cors");
 const { initSocket } = require("./services/socket.service");
+const checkIP = require("./middleware/AllowedIP");
+
+
+
 
 const app = express();
 const server = http.createServer(app);
@@ -15,6 +19,8 @@ app.use(express.json());
 app.use(cookieParser());
 app.set('trust proxy', true); 
 app.use(cors(corsOptions));
+
+
 
 // health + test
 app.get("/health", (req, res) => res.json({ ok: true }));

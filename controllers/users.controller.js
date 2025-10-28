@@ -9,173 +9,100 @@ function normalizeOfficialOffDays(input) {
     : String(input).split(/[,;\n]/);
 
   return raw
-    .map((day) => String(day || "").trim())
+    .map((day) => String(day || '').trim())
     .filter(Boolean)
     .map((day) => day.charAt(0).toUpperCase() + day.slice(1).toLowerCase());
 }
 
 function normalizeDutyRoster(value) {
   const roster = String(value || '').trim();
-  // default you used before:
   return roster || '10am to 7pm';
 }
 
-function normalizeSalary(v) {
-  if (v === null || v === undefined || v === "") return null;
-  const n = Number(v);
+function normalizeSalary(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return NaN;
-  // optional: round to 2 decimals
   return Math.round(n * 100) / 100;
 }
-
-// async function updateUser(req, res) {
-//   const { id } = req.params;
-
-//   // only allow these fields to be set via general updates
-//   const ALLOWED = [
-//     'fullName',
-//     'email',
-//     'department',
-//     'designation',
-//     'branch',
-//     'city',
-//     'joiningDate',
-//     'bloodGroup',
-//     'dutyRoster',
-//     'officialOffDays',
-//     'contactNumber',
-//     'isApproved', // approve / reject
-//     'role',       // role change (extra-guarded below)
-//     'isTeamLead',
-//   ];
-
-//   const patch = {};
-//   for (const k of ALLOWED) {
-//     if (!(k in req.body)) continue;
-//     const value = req.body[k];
-//     switch (k) {
-//       case 'officialOffDays': {
-//         patch[k] = normalizeOfficialOffDays(value);
-//         break;
-//       }
-//       case 'dutyRoster': {
-//         const roster = String(value || '').trim();
-//         patch[k] = roster || '10am to 7pm';
-//         break;
-//       }
-//       case 'bloodGroup': {
-//         const group = String(value || '').trim().toUpperCase();
-//         patch[k] = group || null;
-//         break;
-//       }
-//       case 'designation':
-//       case 'branch':
-//       case 'city':
-//       case 'contactNumber': {
-//         patch[k] = typeof value === 'string' ? value.trim() : value;
-//         break;
-//       }
-//       default: {
-//         patch[k] = value;
-//         break;
-//       }
-//     }
-//   }
-
-//   // guard: only superadmin can change role
-//   if ('role' in patch && req.user.role !== 'superadmin') {
-//     return res.status(403).json({ message: 'Only a superadmin can change roles.' });
-//   }
-
-//   // guard: prevent self-demotion/delete-like behavior if you want (optional)
-//   if (String(req.user._id) === String(id) && 'role' in patch) {
-//     return res.status(400).json({ message: 'You cannot change your own role.' });
-//   }
-
-//   const user = await User.findByIdAndUpdate(id, patch, { new: true });
-//   if (!user) return res.status(404).json({ message: 'Not found' });
-
-//   res.json({
-//     message: 'Updated',
-//     user: {
-//       id: user._id,
-//       fullName: user.fullName,
-//       email: user.email,
-//       employeeId: user.employeeId,
-//       department: user.department,
-//       role: user.role,
-//       isApproved: user.isApproved,
-//       isTeamLead: user.isTeamLead,
-//       branch: user.branch,
-//       city: user.city,
-//       joiningDate: user.joiningDate,
-//       designation: user.designation,
-//       dutyRoster: user.dutyRoster,
-//       officialOffDays: user.officialOffDays || [],
-//       bloodGroup: user.bloodGroup || null,
-//       contactNumber: user.contactNumber,
-//       profileImageUrl: toPublicUrl(user.profileImageUrl),
-//       signatureImageUrl: user.signatureImageUrl || null,
-//     },
-//   });
-// }
 
 async function updateUser(req, res) {
   const { id } = req.params;
 
   const ALLOWED = [
-    'fullName','email','department','designation','branch','city','joiningDate',
-    'bloodGroup','dutyRoster','officialOffDays','contactNumber','isApproved',
-    'role','isTeamLead','salary' // 👈 allow salary
+    'fullName',
+    'email',
+    'department',
+    'designation',
+    'branch',
+    'city',
+    'joiningDate',
+    'bloodGroup',
+    'dutyRoster',
+    'officialOffDays',
+    'contactNumber',
+    'isApproved',
+    'role',
+    'isTeamLead',
+    'salary',
   ];
 
   const patch = {};
-  for (const k of ALLOWED) {
-    if (!(k in req.body)) continue;
-    const value = req.body[k];
-    switch (k) {
+  for (const key of ALLOWED) {
+    if (!(key in req.body)) continue;
+    const value = req.body[key];
+    switch (key) {
       case 'officialOffDays': {
-        patch[k] = normalizeOfficialOffDays(value);
+        patch[key] = normalizeOfficialOffDays(value);
         break;
       }
       case 'dutyRoster': {
-        patch[k] = normalizeDutyRoster(value);
+        patch[key] = normalizeDutyRoster(value);
         break;
       }
       case 'bloodGroup': {
         const group = String(value || '').trim().toUpperCase();
-        const VALID = new Set(['A+','A-','B+','B-','AB+','AB-','O+','O-']);
-        patch[k] = VALID.has(group) ? group : null;
+        patch[key] = group || null;
         break;
       }
       case 'designation':
       case 'branch':
       case 'city':
       case 'contactNumber': {
-        patch[k] = typeof value === 'string' ? value.trim() : value;
+        patch[key] = typeof value === 'string' ? value.trim() : value;
         break;
       }
       case 'salary': {
         const num = normalizeSalary(value);
         if (Number.isNaN(num)) {
-          return res.status(400).json({ message: 'Invalid salary. Must be a non-negative number.' });
+          return res
+            .status(400)
+            .json({ message: 'Invalid salary. Must be a non-negative number.' });
         }
-        patch[k] = num;
+        patch[key] = num;
         break;
       }
       default: {
-        patch[k] = value;
-        break;
+        patch[key] = value;
       }
     }
   }
 
-  // guard: only superadmin can change role
-  if ('role' in patch && req.user.role !== 'superadmin') {
-    return res.status(403).json({ message: 'Only a superadmin can change roles.' });
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ message: 'No valid fields provided.' });
   }
-  if (String(req.user._id) === String(id) && 'role' in patch) {
-    return res.status(400).json({ message: 'You cannot change your own role.' });
+
+  if ('role' in patch) {
+    if (req.user.role !== 'superadmin') {
+      return res
+        .status(403)
+        .json({ message: 'Only a superadmin can change roles.' });
+    }
+    if (String(req.user.id) === String(id)) {
+      return res
+        .status(400)
+        .json({ message: 'You cannot change your own role.' });
+    }
   }
 
   const user = await User.findByIdAndUpdate(id, patch, { new: true });
@@ -200,7 +127,7 @@ async function updateUser(req, res) {
       officialOffDays: user.officialOffDays || [],
       bloodGroup: user.bloodGroup || null,
       contactNumber: user.contactNumber,
-      salary: user.salary ?? null, // 👈 include salary
+      salary: user.salary ?? null,
       profileImageUrl: toPublicUrl(user.profileImageUrl),
       signatureImageUrl: user.signatureImageUrl || null,
     },
@@ -217,7 +144,9 @@ async function listUsers(req, res) {
     filter.role = role;
   }
   const users = await User.find(filter)
-  .select('fullName email role employeeId department designation branch city joiningDate isApproved isTeamLead signatureImageUrl profileImageUrl dutyRoster officialOffDays bloodGroup contactNumber salary')
+    .select(
+      'fullName email role employeeId department designation branch city joiningDate isApproved isTeamLead signatureImageUrl profileImageUrl dutyRoster officialOffDays bloodGroup contactNumber salary'
+    )
     .lean();
   const hydrated = users.map((user) => ({
     ...user,
@@ -230,21 +159,27 @@ async function deleteUser(req, res) {
   try {
     const { id } = req.params;
 
-    if (String(req.user._id) === String(id)) {
-      return res.status(400).json({ message: 'You cannot delete your own account.' });
+    if (String(req.user.id) === String(id)) {
+      return res
+        .status(400)
+        .json({ message: 'You cannot delete your own account.' });
     }
 
     const target = await User.findById(id);
     if (!target) return res.status(404).json({ message: 'Not found' });
 
     if (target.role === 'superadmin' && req.user.role !== 'superadmin') {
-      return res.status(403).json({ message: 'Only a superadmin can delete a superadmin.' });
+      return res
+        .status(403)
+        .json({ message: 'Only a superadmin can delete a superadmin.' });
     }
 
     await User.deleteOne({ _id: target._id });
     return res.json({ message: 'Deleted', id: target._id });
   } catch (err) {
-    return res.status(500).json({ message: err.message || 'Failed to delete user' });
+    return res
+      .status(500)
+      .json({ message: err.message || 'Failed to delete user' });
   }
 }
 
@@ -252,7 +187,9 @@ async function listTeamLeads(req, res) {
   try {
     const leads = await User.find({ isTeamLead: true, isApproved: true })
       .sort({ fullName: 1 })
-      .select('fullName email employeeId department branch city signatureImageUrl profileImageUrl')
+      .select(
+        'fullName email employeeId department branch city signatureImageUrl profileImageUrl'
+      )
       .lean();
     const hydrated = leads.map((lead) => ({
       ...lead,
@@ -260,7 +197,9 @@ async function listTeamLeads(req, res) {
     }));
     return res.json(hydrated);
   } catch (err) {
-    return res.status(500).json({ message: err.message || 'Failed to load team leads' });
+    return res
+      .status(500)
+      .json({ message: err.message || 'Failed to load team leads' });
   }
 }
 
@@ -268,7 +207,9 @@ async function updateSelfTeamLeadStatus(req, res) {
   try {
     const { isTeamLead } = req.body || {};
     if (typeof isTeamLead !== 'boolean') {
-      return res.status(400).json({ message: 'isTeamLead boolean is required' });
+      return res
+        .status(400)
+        .json({ message: 'isTeamLead boolean is required' });
     }
 
     const user = await User.findById(req.user.id);
@@ -280,11 +221,15 @@ async function updateSelfTeamLeadStatus(req, res) {
     await user.save();
 
     return res.json({
-      message: isTeamLead ? 'Registered as team lead' : 'Team lead access removed',
+      message: isTeamLead
+        ? 'Registered as team lead'
+        : 'Team lead access removed',
       isTeamLead: user.isTeamLead,
     });
   } catch (err) {
-    return res.status(500).json({ message: err.message || 'Failed to update team lead status' });
+    return res
+      .status(500)
+      .json({ message: err.message || 'Failed to update team lead status' });
   }
 }
 
