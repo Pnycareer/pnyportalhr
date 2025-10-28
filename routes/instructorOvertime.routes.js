@@ -9,6 +9,7 @@ const {
   getInstructorOvertime,
   updateInstructorOvertime,
   getMonthlyOvertimeReport,
+  deleteInstructorOvertime,
 } = require("../controllers/instructorOvertime.controller");
 
 const ACCESS_ROLES = ["superadmin", "admin", "hr", "employee"];
@@ -28,5 +29,5 @@ router.get(
 router.get("/:id", auth(), allow(...ACCESS_ROLES), getInstructorOvertime);
 
 router.patch("/:id", auth(), allow(...ACCESS_ROLES), updateInstructorOvertime);
-
+router.delete("/:id", auth(), allow(...ACCESS_ROLES), deleteInstructorOvertime); // NEW
 module.exports = router;

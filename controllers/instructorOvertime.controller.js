@@ -1,4 +1,4 @@
-// controllers/instructorOvertimeController.js
+// controllers/instructorOvertime.controller.js
 const mongoose = require("mongoose");
 const InstructorOvertime = require("../models/InstructorOvertime");
 const User = require("../models/User");
@@ -153,7 +153,6 @@ async function createInstructorOvertime(req, res) {
       branchName: branchValue,
       overtimeSlots: parsedSlots.slots,
       notes: noteValue,
-      // verified defaults false in schema
     });
 
     if (isAdmin(req.user?.role) && salary !== undefined) {
@@ -199,7 +198,6 @@ async function listInstructorOvertime(req, res) {
       nextDay.setUTCDate(nextDay.getUTCDate() + 1);
       query.date = { $gte: normalized, $lt: nextDay };
     }
-    // Optional: filter by verified=true/false if you want
     if (req.query.verified === "true") query.verified = true;
     if (req.query.verified === "false") query.verified = false;
 
@@ -210,8 +208,8 @@ async function listInstructorOvertime(req, res) {
         select: "fullName designation branch email employeeId role +salary",
       });
 
-  return res.json(results);
-} catch (err) {
+    return res.json(results);
+  } catch (err) {
     console.error("listInstructorOvertime error:", err);
     return res.status(500).json({ message: "Failed to list overtime claims" });
   }
@@ -461,7 +459,6 @@ async function updateInstructorOvertime(req, res) {
 
     if (req.body.notes !== undefined) updates.notes = String(req.body.notes || "").trim();
 
-    // salary guard
     if (req.body.salary !== undefined) {
       if (!isAdmin(req.user?.role)) return res.status(403).json({ message: "Only admin roles can update salary" });
       const numericSalary = Number(req.body.salary);
@@ -471,7 +468,6 @@ async function updateInstructorOvertime(req, res) {
       updates.salary = numericSalary;
     }
 
-    // NEW: verified guard
     if (req.body.verified !== undefined) {
       if (!isAdmin(req.user?.role)) return res.status(403).json({ message: "Only admin roles can verify" });
       updates.verified = !!req.body.verified;
@@ -482,7 +478,6 @@ async function updateInstructorOvertime(req, res) {
 
     keys.forEach((k) => { claim[k] = updates[k]; });
 
-    // refresh snapshot fields from user if needed
     if (claim.instructor) {
       const userSnapshot =
         claim.instructor.fullName !== undefined ? claim.instructor : await User.findById(claim.instructor).select("+salary");
@@ -511,10 +506,40 @@ async function updateInstructorOvertime(req, res) {
   }
 }
 
+async function deleteInstructorOvertime(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: "Invalid overtime identifier" });
+    }
+
+    const claim = await InstructorOvertime.findById(id).select("instructor verified");
+    if (!claim) return res.status(404).json({ message: "Overtime claim not found" });
+
+    // employee can only delete own; admins can delete any
+    if (req.user?.role === "employee" && String(claim.instructor) !== String(req.user.id)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    // (Optional hard rule) don’t let anyone delete verified claims unless admin
+    if (claim.verified && !isAdmin(req.user?.role)) {
+      return res.status(403).json({ message: "Verified claims can only be deleted by admin" });
+    }
+
+    await InstructorOvertime.deleteOne({ _id: id });
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("deleteInstructorOvertime error:", err);
+    return res.status(500).json({ message: "Failed to delete overtime claim" });
+  }
+}
+
 module.exports = {
   createInstructorOvertime,
   listInstructorOvertime,
   getMonthlyOvertimeReport,
   getInstructorOvertime,
   updateInstructorOvertime,
+  deleteInstructorOvertime, // NEW
 };
