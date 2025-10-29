@@ -103,6 +103,24 @@ function localDayAnchor(dateLike, timezoneOffsetMinutes) {
   return new Date(utcMidnight);
 }
 
+function alignInstantToLocalWorkday(baseUtcMidnight, instant, timezoneOffsetMinutes) {
+  if (!baseUtcMidnight || !instant) return null;
+  const base = new Date(baseUtcMidnight);
+  if (isNaN(base)) return null;
+  const ref = new Date(instant);
+  if (isNaN(ref)) return null;
+  const parsedOffset = Number(timezoneOffsetMinutes);
+  const offset = Number.isFinite(parsedOffset) ? parsedOffset : 0;
+  const shifted = new Date(ref.getTime() - offset * 60000);
+  base.setUTCHours(
+    shifted.getUTCHours(),
+    shifted.getUTCMinutes(),
+    shifted.getUTCSeconds(),
+    shifted.getUTCMilliseconds()
+  );
+  return base;
+}
+
 const SNAPSHOT_DIR = path.join(__dirname, '..', 'uploads', 'attendance');
 const SNAPSHOT_MIME_EXT = {
   'image/png': 'png',
@@ -212,6 +230,7 @@ async function markSelf(req, res) {
     if (!base) return res.status(400).json({ message: 'Unable to determine working day' });
     let attendance = await Attendance.findOne({ user: user._id, date: base });
     const trimmedNote = typeof note === 'string' ? note.trim() : '';
+    const checkInMoment = alignInstantToLocalWorkday(base, now, timezoneOffset) || now;
 
     if (normalizedAction === 'check-in') {
       if (attendance && attendance.checkIn) {
@@ -249,14 +268,14 @@ async function markSelf(req, res) {
           status: normalizedStatus,
           markedBy: user._id,
           note: trimmedNote,
-          checkIn: now,
+          checkIn: checkInMoment,
           checkOut: null,
           checkInSnapshotUrl: snapshotUrl,
           checkOutSnapshotUrl: null,
         });
       } else {
         attendance.status = normalizedStatus;
-        attendance.checkIn = now;
+        attendance.checkIn = checkInMoment;
         attendance.checkOut = null;
         attendance.workedHours = null;
         attendance.markedBy = user._id;
@@ -296,8 +315,11 @@ async function markSelf(req, res) {
         return res.status(400).json({ message: error.message || 'Failed to store snapshot' });
       }
 
+      const rawCheckoutNow = new Date();
+      const checkoutInstant = alignInstantToLocalWorkday(base, rawCheckoutNow, timezoneOffset) || rawCheckoutNow;
+
       attendance.status = normalizedStatus;
-      attendance.checkOut = now;
+      attendance.checkOut = checkoutInstant;
       attendance.markedBy = user._id;
       attendance.checkOutSnapshotUrl = snapshotUrl;
       if (trimmedNote) attendance.note = trimmedNote;
